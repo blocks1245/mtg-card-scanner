@@ -1,80 +1,66 @@
-import cv2
+from flask import Flask, render_template_string, send_file, request
 import pytesseract
-from flask import Flask, Response, render_template_string
-import threading
+import time
+import os
+from PIL import Image
+import io
 
-# Initialize Flask app
+USE_OPENCV = False  # 👈 Set to False when running on Raspberry Pi with PiCamera
+
+if USE_OPENCV:
+    import cv2
+else:
+    from picamera import PiCamera
+
 app = Flask(__name__)
+IMAGE_PATH = "static/image.jpg"
 
-# OpenCV camera
-cap = cv2.VideoCapture(0)
-
-# Simple HTML template to show stream
 HTML = """
 <!DOCTYPE html>
 <html>
-<head>
-    <title>Pi OCR Stream</title>
-</head>
+<head><title>OCR Camera Viewer</title></head>
 <body>
-    <h2>OCR Live Stream from Raspberry Pi</h2>
-    <img src="{{ url_for('video_feed') }}" width="640" />
+    <h2>Captured Image</h2>
+    <img src="/image.jpg?{{ timestamp }}" width="640">
+    <h3>Recognized Text:</h3>
+    <pre>{{ text }}</pre>
+    <form method="POST">
+        <button type="submit">Capture Again</button>
+    </form>
 </body>
 </html>
 """
 
-def generate_frames():
-    while True:
+# Setup camera depending on platform
+if not USE_OPENCV:
+    camera = PiCamera()
+    camera.resolution = (640, 480)
+
+def capture_image():
+    if USE_OPENCV:
+        cap = cv2.VideoCapture(1)
         ret, frame = cap.read()
-        if not ret:
-            break
+        if ret:
+            cv2.imwrite(IMAGE_PATH, frame)
+        cap.release()
+    else:
+        camera.capture(IMAGE_PATH)
 
-        # Resize for performance
-        frame = cv2.resize(frame, (640, 360))
-        h, w = frame.shape[:2]
+def perform_ocr(image_path):
+    image = Image.open(image_path)
+    text = pytesseract.image_to_string(image, config="--psm 6")
+    return text.strip()
 
-        # Define central ROI
-        rect_w, rect_h = int(w * 0.3), int(h * 0.1)
-        x1, y1 = (w - rect_w) // 2, (h - rect_h) // 2
-        x2, y2 = x1 + rect_w, y1 + rect_h
-        roi = frame[y1:y2, x1:x2]
-
-        # Preprocess ROI
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-
-        # Run OCR
-        text = pytesseract.image_to_string(thresh, config='--psm 6')
-
-        # Draw rectangle and OCR result
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        y_text = y2 + 25
-        for line in text.strip().split('\n'):
-            if line.strip():
-                cv2.putText(frame, line.strip(), (x1, y_text), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6, (0, 255, 0), 2)
-                y_text += 25
-
-        # Encode frame as JPEG
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-
-        # Yield to browser as multipart
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-@app.route('/')
+@app.route('/', methods=["GET", "POST"])
 def index():
-    return render_template_string(HTML)
+    capture_image()
+    text = perform_ocr(IMAGE_PATH)
+    return render_template_string(HTML, text=text, timestamp=int(time.time()))
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
-def run_flask():
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+@app.route('/image.jpg')
+def image():
+    return send_file(IMAGE_PATH, mimetype='image/jpeg')
 
 if __name__ == '__main__':
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
+    os.makedirs("static", exist_ok=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
