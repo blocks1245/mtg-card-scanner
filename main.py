@@ -5,12 +5,12 @@ import os
 from PIL import Image
 import io
 
-USE_OPENCV = False  # 👈 Set to False when running on Raspberry Pi with PiCamera
+USE_OPENCV = True  # 👈 Set to False when running on Raspberry Pi with PiCamera
 
 if USE_OPENCV:
     import cv2
 else:
-    from picamera import PiCamera
+    from picamera2 import Picamera2
 
 app = Flask(__name__)
 IMAGE_PATH = "static/image.jpg"
@@ -33,7 +33,8 @@ HTML = """
 
 # Setup camera depending on platform
 if not USE_OPENCV:
-    camera = PiCamera()
+    camera = Picamera2()
+    camera.configure(camera.create_still_configuration())
     camera.resolution = (640, 480)
 
 def capture_image():
@@ -44,7 +45,9 @@ def capture_image():
             cv2.imwrite(IMAGE_PATH, frame)
         cap.release()
     else:
-        camera.capture(IMAGE_PATH)
+        camera.start()
+        camera.capture_file(IMAGE_PATH)
+        camera.stop()
 
 def perform_ocr(image_path):
     image = Image.open(image_path)
