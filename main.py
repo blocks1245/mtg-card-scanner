@@ -1,69 +1,50 @@
-from flask import Flask, render_template_string, send_file, request
-import pytesseract
 import time
-import os
+import cv2
+import numpy as np
 from PIL import Image
-import io
+import pytesseract
+from picamera2 import Picamera2
 
-USE_OPENCV = True  # 👈 Set to False when running on Raspberry Pi with PiCamera
+def initialize_camera():
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_still_configuration(main={"size": (640, 480)}))
+    picam2.start()
+    time.sleep(2)  # Camera warm-up
+    return picam2
 
-if USE_OPENCV:
-    import cv2
-else:
-    from picamera2 import Picamera2
+def capture_and_ocr(picam2):
+    frame = picam2.capture_array()
+    pil_image = Image.fromarray(frame)
+    text = pytesseract.image_to_string(pil_image, config="--psm 6").strip()
+    return frame, text
 
-app = Flask(__name__)
-IMAGE_PATH = "static/image.jpg"
+def display_image_with_text(frame, text):
+    # Draw text lines
+    y0, dy = 30, 30
+    for i, line in enumerate(text.splitlines()):
+        y = y0 + i * dy
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-HTML = """
-<!DOCTYPE html>
-<html>
-<head><title>OCR Camera Viewer</title></head>
-<body>
-    <h2>Captured Image</h2>
-    <img src="/image.jpg?{{ timestamp }}" width="640">
-    <h3>Recognized Text:</h3>
-    <pre>{{ text }}</pre>
-    <form method="POST">
-        <button type="submit">Capture Again</button>
-    </form>
-</body>
-</html>
-"""
+    # Display image
+    cv2.imshow("OCR Result", frame)
+    cv2.waitKey(0)  # Wait for key press to close
+    cv2.destroyAllWindows()
 
-# Setup camera depending on platform
-if not USE_OPENCV:
-    camera = Picamera2()
-    camera.configure(camera.create_still_configuration())
-    camera.resolution = (640, 480)
+def main():
+    print("OCR Camera Ready. Press Enter to capture. Ctrl+C to exit.")
+    picam2 = initialize_camera()
 
-def capture_image():
-    if USE_OPENCV:
-        cap = cv2.VideoCapture(1)
-        ret, frame = cap.read()
-        if ret:
-            cv2.imwrite(IMAGE_PATH, frame)
-        cap.release()
-    else:
-        camera.start()
-        camera.capture_file(IMAGE_PATH)
-        camera.stop()
+    try:
+        while True:
+            input("Press Enter to capture image and perform OCR...")
+            frame, text = capture_and_ocr(picam2)
+            print("Recognized Text:\n" + text)
+            display_image_with_text(frame, text)
+    except KeyboardInterrupt:
+        print("\nExiting.")
+    finally:
+        picam2.stop()
+        cv2.destroyAllWindows()
 
-def perform_ocr(image_path):
-    image = Image.open(image_path)
-    text = pytesseract.image_to_string(image, config="--psm 6")
-    return text.strip()
-
-@app.route('/', methods=["GET", "POST"])
-def index():
-    capture_image()
-    text = perform_ocr(IMAGE_PATH)
-    return render_template_string(HTML, text=text, timestamp=int(time.time()))
-
-@app.route('/image.jpg')
-def image():
-    return send_file(IMAGE_PATH, mimetype='image/jpeg')
-
-if __name__ == '__main__':
-    os.makedirs("static", exist_ok=True)
-    app.run(host='0.0.0.0', port=5000, debug=False)
+if __name__ == "__main__":
+    main()
